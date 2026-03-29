@@ -5,111 +5,120 @@ import sys
 import time
 import math
 
-HOST = '169.254.123.188' #adresse IP du robot
-PORT = 30000 # port de communication réseau
-LARGEUR_REELLE_MM = 300 # taille réelle en millimètres de la zone visible
-RES_X = 640 # résolution horizontale de la caméra en pixels
-RES_Y = 480 # résolution verticale de la caméra en pixels
-RATIO = LARGEUR_REELLE_MM / RES_X # coefficient pour convertir les pixels en millimètres
+HOST = '169.254.123.188'
+PORT = 30000
+LARGEUR_REELLE_MM = 300
+RES_X = 640
+RES_Y = 480
+RATIO = LARGEUR_REELLE_MM / RES_X
 
-CIBLE_X_MM = 0.0 # La position de consigne où le cube doit aller (0.0 = le centre)
-KP = 0.4 # Gain Proportionnel : définit la force de la correction (réaction forte si loin, faible si proche)
-KD = 0.05 # Gain Dérivé : freine le mouvement à l'approche de la cible pour éviter de dépasser
-ANGLE_REPOS_DEG = 180.0 # L'angle physique où la règle est parfaitement à l'horizontale
-LIMITE_DEG = 10.0 # La sécurité maximale : le robot ne s'inclinera jamais de plus de 10 degrés
+CIBLE_X_MM = 0.0
+KP = 0.4
+KD = 0.05
+ANGLE_REPOS_DEG = 180.0
+LIMITE_DEG = 10.0
 
-aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50) # Charge le dictionnaire des marqueurs Aruco
-parameters = cv2.aruco.DetectorParameters() # Charge les paramètres par défaut du détecteur
-detector = cv2.aruco.ArucoDetector(aruco_dict, parameters) # Initialise le détecteur d'Aruco
+aruco_dict = cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50)
+parameters = cv2.aruco.DetectorParameters()
+detector = cv2.aruco.ArucoDetector(aruco_dict, parameters)
 
-try: # Essaie d'exécuter ce bloc de code pour le réseau
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM) # Crée le socket TCP/IP
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) # Permet de relancer le programme sans erreur de port bloqué
-    s.bind((HOST, PORT)) # Lie le socket à l'adresse IP et au port définis
-    s.listen(1) # Met le serveur en écoute d'une connexion entrante (le robot)
-    print("Attente connexion robot...") # Affiche un message dans la console
-    conn, addr = s.accept() # Accepte la connexion du robot quand il se connecte
-    conn.setblocking(False) # Rend le socket non-bloquant pour ne pas figer le programme Python
-    print(f"Connecte: {addr}") # Affiche l'adresse IP du robot connecté
-except Exception as e: # Si une erreur réseau survient
-    print(e) # Affiche l'erreur dans la console
-    sys.exit() # Arrête complètement le programme Python
+try:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind((HOST, PORT))
+    s.listen(1)
+    print("Attente connexion robot...")
+    conn, addr = s.accept()
+    conn.setblocking(False)
+    print(f"Connecte: {addr}")
+except Exception as e:
+    print(e)
+    sys.exit()
 
-cam = cv2.VideoCapture(0, cv2.CAP_V4L2) # Ouvre le flux vidéo de la webcam branchée en USB
-cam.set(cv2.CAP_PROP_FRAME_WIDTH, RES_X) # Force la largeur de l'image de la caméra
-cam.set(cv2.CAP_PROP_FRAME_HEIGHT, RES_Y) # Force la hauteur de l'image de la caméra
-time.sleep(1.0) # Fait une pause de 1 seconde pour laisser la caméra s'allumer
+cam = cv2.VideoCapture(0, cv2.CAP_V4L2)
+cam.set(cv2.CAP_PROP_FRAME_WIDTH, RES_X)
+cam.set(cv2.CAP_PROP_FRAME_HEIGHT, RES_Y)
+time.sleep(1.0)
 
-erreur_prec = 0.0 # Initialise la mémoire de l'erreur précédente à 0 pour la dérivée
-theta6_rad = math.radians(ANGLE_REPOS_DEG) # Convertit l'angle de repos (180°) en radians (approx 3.1416)
+erreur_prec = 0.0
+theta6_rad = math.radians(ANGLE_REPOS_DEG)
+last_time = time.time()
 
-try: # Démarre le bloc principal qui tournera à l'infini
-    while True: # Boucle infinie
-        start_time = time.time() # Enregistre l'heure exacte au début de ce cycle
+try:
+    while True:
+        current_time = time.time()
+        dt = current_time - last_time
+        last_time = current_time
+        start_time = current_time
         
-        ret, frame = cam.read() # Lit une image depuis la caméra
-        if not ret: # Si la lecture de l'image a échoué
-            continue # Saute le reste de la boucle et recommence au début
+        ret, frame = cam.read()
+        if not ret:
+            continue
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) # Convertit l'image en noir et blanc pour faciliter la détection
-        corners, ids, rejected = detector.detectMarkers(gray) # Cherche les marqueurs Aruco dans l'image
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        corners, ids, rejected = detector.detectMarkers(gray)
 
-        x_mm = 0.0 # Initialise la coordonnée X du cube à 0 par défaut
+        x_mm = 0.0
 
-        if ids is not None and len(ids) > 0: # Si au moins un marqueur Aruco est détecté
-            c = corners[0][0] # Récupère les 4 coins du premier marqueur trouvé
-            center_x = np.mean(c[:, 0]) # Calcule la position X du centre du marqueur en pixels
-            center_y = np.mean(c[:, 1]) # Calcule la position Y du centre du marqueur en pixels
+        if ids is not None and len(ids) > 0:
+            c = corners[0][0]
+            center_x = np.mean(c[:, 0])
+            center_y = np.mean(c[:, 1])
 
-            x_mm = (center_x - (RES_X / 2)) * RATIO # Convertit la position X en millimètres par rapport au centre de l'image
+            x_mm = (center_x - (RES_X / 2)) * RATIO
             
-            cv2.aruco.drawDetectedMarkers(frame, corners, ids) # Dessine un carré vert autour du marqueur sur l'écran
-            cv2.circle(frame, (int(center_x), int(center_y)), 5, (0, 0, 255), -1) # Dessine un point rouge au centre du marqueur
+            cv2.aruco.drawDetectedMarkers(frame, corners, ids)
+            cv2.circle(frame, (int(center_x), int(center_y)), 5, (0, 0, 255), -1)
             
-            texte = f"X: {x_mm:.1f} mm" # Prépare le texte affichant la position X avec 1 décimale
-            cv2.putText(frame, texte, (int(center_x) + 10, int(center_y) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2) # Affiche le texte sur l'image
+            texte = f"X: {x_mm:.1f} mm"
+            cv2.putText(frame, texte, (int(center_x) + 10, int(center_y) - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-            erreur = CIBLE_X_MM - x_mm # Calcule l'écart entre la position voulue et la position réelle (+25 ou -10 par exemple)
-            derivee = erreur - erreur_prec # Calcule la vitesse de déplacement de l'erreur
-            commande_deg = (erreur * KP) + (derivee * KD) # Calcule l'angle d'inclinaison nécessaire pour corriger l'erreur
-            erreur_prec = erreur # Sauvegarde l'erreur actuelle pour le prochain tour de boucle
-
-            if commande_deg > LIMITE_DEG: # Si l'angle demandé est plus grand que la limite autorisée (ex: > 10)
-                commande_deg = LIMITE_DEG # Force l'angle à la valeur limite de sécurité (+10)
-            elif commande_deg < -LIMITE_DEG: # Si l'angle demandé est plus petit que la limite négative (ex: < -10)
-                commande_deg = -LIMITE_DEG # Force l'angle à la valeur limite de sécurité négative (-10)
-
-            angle_absolu_deg = ANGLE_REPOS_DEG - commande_deg # Calcule l'angle final du robot (le '-' assure que le robot tourne du bon côté)
+            erreur = CIBLE_X_MM - x_mm
             
-            theta6_rad = math.radians(angle_absolu_deg) # Convertit l'angle final de degrés vers radians pour l'envoyer au robot
+            if dt <= 0.0:
+                dt = 0.001
+                
+            derivee = (erreur - erreur_prec) / dt 
+            
+            commande_deg = (erreur * KP) + (derivee * KD)
+            erreur_prec = erreur
 
-        else: # Si le marqueur Aruco n'est plus visible (cube tombé ou caché)
-            theta6_rad = math.radians(ANGLE_REPOS_DEG) # Force le robot à se remettre parfaitement à l'horizontale
-            erreur_prec = 0.0 # Réinitialise la mémoire du correcteur
+            if commande_deg > LIMITE_DEG:
+                commande_deg = LIMITE_DEG
+            elif commande_deg < -LIMITE_DEG:
+                commande_deg = -LIMITE_DEG
 
-        message = f"({theta6_rad:.4f})\n" # Formate le message réseau avec l'angle en radians et 4 décimales
-        print(message) # Affiche la donnée envoyée dans la console Python pour vérifier le bon fonctionnement
+            angle_absolu_deg = ANGLE_REPOS_DEG - commande_deg
+            
+            theta6_rad = math.radians(angle_absolu_deg)
+
+        else:
+            theta6_rad = math.radians(ANGLE_REPOS_DEG)
+            erreur_prec = 0.0
+
+        message = f"({theta6_rad:.4f})\n"
+        print(message)
         
-        try: # Essaie d'envoyer la donnée au robot
-            conn.sendall(message.encode('ascii')) # Envoie physiquement le message converti en texte ASCII dans le câble Ethernet
-        except BlockingIOError: # Si le réseau est momentanément saturé (non-bloquant)
-            pass # Ne fait rien et continue
-        except BrokenPipeError: # Si le robot s'est déconnecté brutalement
-            break # Casse la boucle infinie pour arrêter le programme
+        try:
+            conn.sendall(message.encode('ascii'))
+        except BlockingIOError:
+            pass
+        except BrokenPipeError:
+            break
         
-        cv2.imshow("Camera", frame) # Affiche la fenêtre avec le retour vidéo de la webcam
+        cv2.imshow("Camera", frame)
         
-        if cv2.waitKey(1) & 0xFF == ord('q'): # Attend 1 milliseconde, si la touche 'q' est pressée
-            break # Casse la boucle infinie pour fermer la fenêtre
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
-        process_time = time.time() - start_time # Calcule le temps qu'a pris le programme pour faire tout ce cycle
-        if process_time < 0.04: # Si le cycle a pris moins de 0.04 seconde (pour viser 25 images par seconde)
-            time.sleep(0.04 - process_time) # Fait une pause pour attendre la fin des 0.04 secondes et ne pas noyer le robot de données
+        process_time = time.time() - start_time
+        if process_time < 0.04:
+            time.sleep(0.04 - process_time)
 
-except KeyboardInterrupt: # Si l'utilisateur fait CTRL+C dans la console
-    pass # Ne fait rien, passe directement au bloc 'finally'
+except KeyboardInterrupt:
+    pass
 
-finally: # Code exécuté obligatoirement à la fin, quoi qu'il arrive (erreur ou arrêt manuel)
-    conn.close() # Coupe proprement la connexion réseau avec le robot
-    cam.release() # Libère l'accès à la webcam pour les autres programmes
-    cv2.destroyAllWindows() # Ferme la fenêtre d'affichage vidéo
+finally:
+    conn.close()
+    cam.release()
+    cv2.destroyAllWindows()
